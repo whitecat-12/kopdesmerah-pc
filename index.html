@@ -214,7 +214,7 @@ button{background:none;border:none;cursor:pointer;color:inherit;}
 .panel{background:#fff; border-radius:var(--r-lg); padding:18px; box-shadow:var(--sh-sm); border:1.5px solid var(--border-soft);}
 
 .traffic-panel{background:linear-gradient(135deg,#F5F3FF 0%,#EDE9FE 100%); border:1.5px solid #DDD6FE; border-radius:var(--r-lg); padding:18px; margin-bottom:20px; position:relative; overflow:hidden}
-.traffic-panel::before{content:''; position:absolute; top:-40%; right:-15%; width:220px; height:220px; background:radial-gradient(circle,rgba(139,92,246,.12),transparent 70%); border-radius:50%; pointer-events:none}
+.traffic-panel::before{content:'';position:absolute;top:-40%;right:-15%;width:220px;height:220px;background:radial-gradient(circle,rgba(139,92,246,.12),transparent 70%);border-radius:50%;pointer-events:none}
 .traffic-head{display:flex; align-items:center; gap:9px; font-size:14px; font-weight:800; color:#6D28D9; margin-bottom:14px; position:relative; z-index:1; letter-spacing:-.2px}
 .traffic-head i{width:32px; height:32px; border-radius:10px; background:linear-gradient(135deg,#8B5CF6,#6D28D9); color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; flex-shrink:0; box-shadow:0 4px 10px rgba(109,40,217,.3)}
 .traffic-panel .stat-grid{margin-bottom:0}
@@ -682,6 +682,12 @@ button{background:none;border:none;cursor:pointer;color:inherit;}
 
         <section id="aviewPelanggan" class="admin-view">
           <div class="admin-head"><div><h1>Daftar Pengguna</h1><p>Kelola role pelanggan, kurir & admin</p></div></div>
+          <div class="admin-search-bar" style="display:flex;gap:8px;margin-bottom:16px;">
+            <div class="admin-search-box" style="flex:1;background:#fff;border-radius:var(--r-md);display:flex;align-items:center;padding:0 14px;height:46px;border:1.5px solid var(--border);transition:.22s;">
+              <i class="fas fa-search" style="color:var(--red);margin-right:9px;font-size:13px;opacity:.7;flex-shrink:0"></i>
+              <input type="text" id="adminCustomerSearch" placeholder="Cari nama, email, telepon, alamat, atau role..." style="border:none;background:transparent;outline:none;width:100%;font-size:13px;font-weight:500;color:var(--text);">
+            </div>
+          </div>
           <div id="adminCustomerList"></div>
         </section>
 
@@ -971,6 +977,7 @@ let courierFirstFix = true;
 
 let formImages = [];
 let adminProductSearch = "";
+let adminCustomerSearch = "";        /* ← BARU: search state untuk pengguna */
 let promoCards = [];
 let adminOrderIds = new Set();
 let adminOrdersReady = false;
@@ -1311,6 +1318,7 @@ async function doLogout() {
   if (courierWatchId != null) await stopCourierBroadcast(true);
   detachListeners();
   adminOrderIds.clear(); adminOrdersReady = false;
+  adminCustomerSearch = "";        /* ← reset search pengguna saat logout */
   await signOut(auth);
   toast("Kamu telah keluar");
 }
@@ -1364,10 +1372,14 @@ function updateTrackingLiveStatus(order) {
     else $("#mapPkgTitle").textContent = live ? "Posisi Kurir (LIVE)" : "Posisi Paket";
   }
 }
-function startLiveTimer() {
+
+  function startLiveTimer() {
   stopLiveTimer();
   liveUpdateTimer = setInterval(() => {
-    if (!currentTrackOrderId || !$("#mapOverlay").classList.contains("show")) { stopLiveTimer(); return; }
+    if (!currentTrackOrderId || !$("#mapOverlay").classList.contains("show")) {
+      stopLiveTimer();
+      return;
+    }
     const o = allOrders.find(x => x.id === currentTrackOrderId);
     if (o) updateTrackingLiveStatus(o);
   }, 1000);
@@ -1788,6 +1800,7 @@ function attachAdminEvents() {
   $("#pHarga").addEventListener("input", updateDiscountPreview);
   $("#pDiskon").addEventListener("input", updateDiscountPreview);
   $("#adminProductSearch")?.addEventListener("input", e => { adminProductSearch = e.target.value; renderAdminProducts(); });
+  $("#adminCustomerSearch")?.addEventListener("input", e => { adminCustomerSearch = e.target.value; renderAdminCustomers(); });  /* ← BARU */
   $("#btnAddBundle")?.addEventListener("click", () => addBundleRow());
   $("#pSubsidi")?.addEventListener("change", e => { const wrap = document.getElementById("wrapBundle"); if (wrap) wrap.style.display = e.target.checked ? "none" : "flex"; });
   $("#btnSaveSettings")?.addEventListener("click", savePaymentSettings);
@@ -2131,27 +2144,55 @@ async function updateOrderStatus(id, status) {
   } catch (err) { toast("Gagal memperbarui: " + err.message, "err"); }
 }
 
+/* ================= CUSTOMERS (dengan search) ================= */
 function listenCustomers() {
   unsubCustomers = onSnapshot(collection(db, "users"), snap => {
-    const allUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    allUsers.sort((a, b) => {
-      if (a.id === currentUser.uid) return -1;
-      if (b.id === currentUser.uid) return 1;
-      const roleOrder = { customer: 0, kurir: 1, admin: 2 };
-      return (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3);
-    });
-    allCustomers = allUsers;
-    const el = $("#adminCustomerList");
-    if (!allUsers.length) { el.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i>Belum ada pengguna</div>`; return; }
-    el.innerHTML = allUsers.map(u => {
-      const isKurir = u.role === "kurir";
-      const isAdmin = u.role === "admin";
-      const isSelf = u.id === currentUser.uid;
-      const roleClass = `role-${u.role || "customer"}`;
-      const roleSelect = `<div class="cust-role-row"><label><i class="fas fa-user-shield" style="margin-right:4px"></i>Role</label><select class="role-select-mini ${roleClass}" data-user-role="${u.id}" data-user-name="${esc(u.nama || u.email || "")}" ${isSelf ? 'disabled title="Tidak bisa mengubah role sendiri"' : ''}><option value="customer" ${u.role === "customer" ? "selected" : ""}>🛒 Pelanggan</option><option value="kurir" ${u.role === "kurir" ? "selected" : ""}>🏍️ Kurir</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>🛡️ Admin</option></select></div>`;
-      return `<div class="cust-card ${isSelf ? 'self-user' : ''}"><div class="cust-avatar ${isKurir ? "kurir" : ""}" style="${isAdmin ? 'background:#FEE2E2;color:#B91C1C' : ''}">${esc(initials(u.nama || u.email))}</div><div class="cust-info"><h4>${esc(u.nama || "-")}${isKurir ? `<span class="adm-kurir-tag"><i class="fas fa-motorcycle"></i>KURIR</span>` : ""}${isAdmin && !isSelf ? `<span class="adm-subsidi-tag" style="background:#FEE2E2;color:#B91C1C"><i class="fas fa-user-shield"></i>ADMIN</span>` : ""}</h4><p><i class="fas fa-envelope" style="color:${isKurir ? "#2563EB" : "var(--red)"};font-size:9px"></i> ${esc(u.email || "-")}</p><p><i class="fas fa-phone" style="color:${isKurir ? "#2563EB" : "var(--red)"};font-size:9px"></i> ${u.telepon ? waPhoneHTML(u.telepon, u.nama, null) : "-"}</p>${!isKurir && !isAdmin ? `<p><i class="fas fa-location-dot" style="color:var(--red);font-size:9px"></i> ${esc(u.alamat || "-")}</p>` : ""}${roleSelect}</div></div>`;
-    }).join("");
+    allCustomers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderAdminCustomers();
   }, err => console.error(err));
+}
+
+function renderAdminCustomers() {
+  const el = $("#adminCustomerList");
+  if (!el) return;
+
+  const search = (adminCustomerSearch || "").trim().toLowerCase();
+
+  /* Sort: self dulu, lalu by role */
+  const sorted = allCustomers.slice().sort((a, b) => {
+    if (a.id === currentUser.uid) return -1;
+    if (b.id === currentUser.uid) return 1;
+    const roleOrder = { customer: 0, kurir: 1, admin: 2 };
+    return (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3);
+  });
+
+  /* Filter by search */
+  let list = sorted;
+  if (search) {
+    list = sorted.filter(u => {
+      const hay = [u.nama, u.email, u.telepon, u.alamat, u.role]
+        .filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(search);
+    });
+  }
+
+  if (!sorted.length) {
+    el.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i>Belum ada pengguna</div>`;
+    return;
+  }
+  if (!list.length) {
+    el.innerHTML = `<div class="empty-state"><i class="fas fa-search"></i>Tidak ada pengguna cocok dengan "${esc(adminCustomerSearch)}"</div>`;
+    return;
+  }
+
+  el.innerHTML = list.map(u => {
+    const isKurir = u.role === "kurir";
+    const isAdmin = u.role === "admin";
+    const isSelf = u.id === currentUser.uid;
+    const roleClass = `role-${u.role || "customer"}`;
+    const roleSelect = `<div class="cust-role-row"><label><i class="fas fa-user-shield" style="margin-right:4px"></i>Role</label><select class="role-select-mini ${roleClass}" data-user-role="${u.id}" data-user-name="${esc(u.nama || u.email || "")}" ${isSelf ? 'disabled title="Tidak bisa mengubah role sendiri"' : ''}><option value="customer" ${u.role === "customer" ? "selected" : ""}>🛒 Pelanggan</option><option value="kurir" ${u.role === "kurir" ? "selected" : ""}>🏍️ Kurir</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>🛡️ Admin</option></select></div>`;
+    return `<div class="cust-card ${isSelf ? 'self-user' : ''}"><div class="cust-avatar ${isKurir ? "kurir" : ""}" style="${isAdmin ? 'background:#FEE2E2;color:#B91C1C' : ''}">${esc(initials(u.nama || u.email))}</div><div class="cust-info"><h4>${esc(u.nama || "-")}${isKurir ? `<span class="adm-kurir-tag"><i class="fas fa-motorcycle"></i>KURIR</span>` : ""}${isAdmin && !isSelf ? `<span class="adm-subsidi-tag" style="background:#FEE2E2;color:#B91C1C"><i class="fas fa-user-shield"></i>ADMIN</span>` : ""}</h4><p><i class="fas fa-envelope" style="color:${isKurir ? "#2563EB" : "var(--red)"};font-size:9px"></i> ${esc(u.email || "-")}</p><p><i class="fas fa-phone" style="color:${isKurir ? "#2563EB" : "var(--red)"};font-size:9px"></i> ${u.telepon ? waPhoneHTML(u.telepon, u.nama, null) : "-"}</p>${!isKurir && !isAdmin ? `<p><i class="fas fa-location-dot" style="color:var(--red);font-size:9px"></i> ${esc(u.alamat || "-")}</p>` : ""}${roleSelect}</div></div>`;
+  }).join("");
 }
 
 function getOrderDate(o) {
@@ -2660,4 +2701,4 @@ document.addEventListener("keydown", e => {
 promoCards = DEFAULT_PROMO_CARDS.slice();
 </script>
 </body>
-</html>
+</html>  
