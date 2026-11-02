@@ -200,7 +200,7 @@ button{background:none;border:none;cursor:pointer;color:inherit;}
 .admin-head{display:flex; justify-content:space-between; align-items:flex-start; gap:14px; margin-bottom:22px; flex-wrap:wrap;}
 .admin-head h1{font-size:24px; font-weight:800; color:var(--text); letter-spacing:-.5px; line-height:1.2;}
 .admin-head p{font-size:13px; color:var(--text-soft); margin-top:4px; font-weight:500; line-height:1.45;}
-.head-actions{display:flex; gap:8px;}
+.head-actions{display:flex; gap:8px; flex-wrap:wrap;}
 .head-actions .btn-sm{justify-content:center;}
 
 /* STATS */
@@ -636,6 +636,10 @@ button{background:none;border:none;cursor:pointer;color:inherit;}
               <button class="btn-sm ghost" id="btnExportExcel" title="Export data penjualan ke Excel">
                 <i class="fas fa-file-excel" style="color:#059669"></i> Export Excel
               </button>
+              <!-- ✅ TOMBOL BARU: Export Ongkir PDF -->
+              <button class="btn-sm ghost" id="btnExportOngkir" title="Export laporan ongkir, jarak & kurir ke PDF">
+                <i class="fas fa-truck" style="color:#D97706"></i> Export Ongkir PDF
+              </button>
             </div>
           </div>
           <div class="stat-grid">
@@ -977,7 +981,7 @@ let courierFirstFix = true;
 
 let formImages = [];
 let adminProductSearch = "";
-let adminCustomerSearch = "";        /* ← BARU: search state untuk pengguna */
+let adminCustomerSearch = "";
 let promoCards = [];
 let adminOrderIds = new Set();
 let adminOrdersReady = false;
@@ -1318,7 +1322,7 @@ async function doLogout() {
   if (courierWatchId != null) await stopCourierBroadcast(true);
   detachListeners();
   adminOrderIds.clear(); adminOrdersReady = false;
-  adminCustomerSearch = "";        /* ← reset search pengguna saat logout */
+  adminCustomerSearch = "";
   await signOut(auth);
   toast("Kamu telah keluar");
 }
@@ -1362,7 +1366,7 @@ function updateTrackingLiveStatus(order) {
   if (lastUpd) {
     if (order.locationUpdatedAt) {
       lastUpd.textContent = timeAgoShort(order.locationUpdatedAt);
-            lastUpd.style.color = live ? "#059669" : "#71717A";
+      lastUpd.style.color = live ? "#059669" : "#71717A";
       lastUpd.style.fontWeight = live ? "800" : "600";
     } else { lastUpd.textContent = "belum ada update"; lastUpd.style.color = "#71717A"; }
   }
@@ -1373,7 +1377,7 @@ function updateTrackingLiveStatus(order) {
   }
 }
 
-  function startLiveTimer() {
+function startLiveTimer() {
   stopLiveTimer();
   liveUpdateTimer = setInterval(() => {
     if (!currentTrackOrderId || !$("#mapOverlay").classList.contains("show")) {
@@ -1762,6 +1766,173 @@ function exportExcel() {
   }
 }
 
+/* ================= EXPORT ONGKIR PDF (FITUR BARU) ================= */
+async function exportOngkirPDF() {
+  const orders = allOrders.filter(o => o.status !== "dibatalkan");
+  if (!orders.length) {
+    toast("Belum ada data pesanan untuk dilaporkan", "err");
+    return;
+  }
+  if (typeof window.jspdf === "undefined") {
+    toast("Library PDF belum siap, coba lagi", "err");
+    return;
+  }
+
+  const btn = $("#btnExportOngkir");
+  const old = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Membuat PDF...';
+
+  try {
+    orders.sort((a, b) => {
+      const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt || 0).getTime();
+      const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt || 0).getTime();
+      return ta - tb;
+    });
+
+    const rows = orders.map((o, i) => {
+      const date = o.createdAt?.toDate
+        ? o.createdAt.toDate()
+        : new Date(o.createdAt || Date.now());
+      const tanggal = date.toLocaleDateString("id-ID", {
+        day: "2-digit", month: "2-digit", year: "numeric"
+      });
+      const jam = date.toLocaleTimeString("id-ID", {
+        hour: "2-digit", minute: "2-digit"
+      });
+
+      let jarakStr = "-";
+      let jarakMeter = 0;
+      if (o.destLat != null && o.destLng != null) {
+        jarakMeter = haversineDistance(
+          [KOPERASI_LAT, KOPERASI_LNG],
+          [Number(o.destLat), Number(o.destLng)]
+        );
+        jarakStr = formatDistance(jarakMeter);
+      }
+
+      const ongkirVal = Number(o.ongkir) || 0;
+      const ongkirText = o.ongkirFree ? "GRATIS" : rupiah(ongkirVal);
+
+      return {
+        no: i + 1,
+        tanggal: `${tanggal}\n${jam}`,
+        orderId: (o.id || "").slice(0, 8).toUpperCase(),
+        pembeli: o.nama || o.namaPembeli || "-",
+        telepon: o.telepon || "-",
+        alamat: o.alamat || "-",
+        jarak: jarakStr,
+        jarakMeter,
+        kurir: o.courierName || "(belum ditugaskan)",
+        kurirPhone: o.courierPhone || "-",
+        status: o.status || "-",
+        ongkir: ongkirText,
+        ongkirRaw: o.ongkirFree ? 0 : ongkirVal
+      };
+    });
+
+    const totalOngkir    = rows.reduce((s, r) => s + r.ongkirRaw, 0);
+    const totalGratis    = rows.filter(r => r.ongkir === "GRATIS").length;
+    const totalBerbayar  = rows.length - totalGratis;
+    const totalJarak     = rows.reduce((s, r) => s + r.jarakMeter, 0);
+    const totalKurir     = [...new Set(rows.map(r => r.kurir).filter(k => k && k !== "(belum ditugaskan)"))].length;
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+
+    doc.setFillColor(217, 119, 6);
+    doc.rect(0, 0, 297, 22, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(16);
+    doc.setFont(undefined, "bold");
+    doc.text("Laporan Ongkir & Pengiriman — Kopdesku Merah Putih", 14, 12);
+    doc.setFontSize(9);
+    doc.setFont(undefined, "normal");
+    doc.text("Kunduran, Blora — Panel Admin", 14, 18);
+    doc.text(`Dicetak: ${new Date().toLocaleString("id-ID")}`, 200, 12);
+
+    doc.setTextColor(24, 24, 27);
+    doc.setFontSize(10);
+    doc.setFont(undefined, "bold");
+    doc.text("Ringkasan Pengiriman:", 14, 30);
+    doc.setFont(undefined, "normal");
+    doc.text(`Total Pesanan           : ${rows.length}`, 14, 36);
+    doc.text(`Total Ongkir Terkumpul  : Rp ${totalOngkir.toLocaleString("id-ID")}`, 14, 41);
+    doc.text(`Pesanan Gratis Ongkir   : ${totalGratis}`, 14, 46);
+    doc.text(`Pesanan Berbayar        : ${totalBerbayar}`, 80, 36);
+    doc.text(`Total Jarak Tempuh      : ${formatDistance(totalJarak)}`, 80, 41);
+    doc.text(`Jumlah Kurir Terlibat   : ${totalKurir} orang`, 80, 46);
+
+    doc.autoTable({
+      startY: 52,
+      head: [[
+        "No", "Tanggal / Jam", "Order ID", "Pembeli", "Telepon",
+        "Alamat Rumah", "Jarak", "Kurir", "Status", "Ongkir"
+      ]],
+      body: rows.map(r => [
+        r.no,
+        r.tanggal,
+        r.orderId,
+        r.pembeli,
+        r.telepon,
+        r.alamat,
+        r.jarak,
+        r.kurir,
+        r.status,
+        r.ongkir
+      ]),
+      styles: { fontSize: 7.5, cellPadding: 2, overflow: "linebreak", valign: "middle" },
+      headStyles: { fillColor: [217, 119, 6], textColor: 255, fontStyle: "bold", halign: "center", fontSize: 7.5 },
+      alternateRowStyles: { fillColor: [254, 243, 199] },
+      columnStyles: {
+        0: { cellWidth: 8,  halign: "center" },
+        1: { cellWidth: 22, halign: "center" },
+        2: { cellWidth: 18, halign: "center" },
+        3: { cellWidth: 28 },
+        4: { cellWidth: 22 },
+        5: { cellWidth: 60 },
+        6: { cellWidth: 16, halign: "center" },
+        7: { cellWidth: 30 },
+        8: { cellWidth: 18, halign: "center" },
+        9: { cellWidth: 22, halign: "right" }
+      },
+      didParseCell: (data) => {
+        if (data.section === "body") {
+          if (data.column.index === 8) {
+            const v = String(data.cell.raw || "").toLowerCase();
+            if (v === "selesai")       data.cell.styles.textColor = [4, 120, 87];
+            else if (v === "dikirim")  data.cell.styles.textColor = [220, 38, 38];
+            else if (v === "pending")  data.cell.styles.textColor = [180, 83, 9];
+            data.cell.styles.fontStyle = "bold";
+          }
+          if (data.column.index === 9) {
+            const v = String(data.cell.raw || "");
+            if (v === "GRATIS") {
+              data.cell.styles.textColor = [5, 150, 105];
+              data.cell.styles.fontStyle = "bold";
+            }
+          }
+        }
+      }
+    });
+
+    const finalY = doc.lastAutoTable.finalY + 8;
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 120);
+    doc.text("© Kopdesku Merah Putih — Dari Desa untuk Indonesia", 14, finalY);
+
+    doc.save(`Laporan-Ongkir-${new Date().toISOString().slice(0, 10)}.pdf`);
+    toast("PDF Ongkir berhasil diunduh ✓", "ok");
+
+  } catch (e) {
+    console.error(e);
+    toast("Gagal export PDF Ongkir: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = old;
+  }
+}
+
 /* ================= ADMIN ================= */
 function initAdmin() {
   showScreen("adminScreen");
@@ -1800,7 +1971,7 @@ function attachAdminEvents() {
   $("#pHarga").addEventListener("input", updateDiscountPreview);
   $("#pDiskon").addEventListener("input", updateDiscountPreview);
   $("#adminProductSearch")?.addEventListener("input", e => { adminProductSearch = e.target.value; renderAdminProducts(); });
-  $("#adminCustomerSearch")?.addEventListener("input", e => { adminCustomerSearch = e.target.value; renderAdminCustomers(); });  /* ← BARU */
+  $("#adminCustomerSearch")?.addEventListener("input", e => { adminCustomerSearch = e.target.value; renderAdminCustomers(); });
   $("#btnAddBundle")?.addEventListener("click", () => addBundleRow());
   $("#pSubsidi")?.addEventListener("change", e => { const wrap = document.getElementById("wrapBundle"); if (wrap) wrap.style.display = e.target.checked ? "none" : "flex"; });
   $("#btnSaveSettings")?.addEventListener("click", savePaymentSettings);
@@ -1809,6 +1980,8 @@ function attachAdminEvents() {
   $("#btnResetRevenue")?.addEventListener("click", resetRevenue);
   $("#btnExportPdf")?.addEventListener("click", exportPDF);
   $("#btnExportExcel")?.addEventListener("click", exportExcel);
+  // ✅ FITUR BARU: Event listener untuk Export Ongkir PDF
+  $("#btnExportOngkir")?.addEventListener("click", exportOngkirPDF);
 
   $("#btnAddUrl")?.addEventListener('click', () => {
     const input = document.getElementById('pGambarUrl');
@@ -2158,7 +2331,6 @@ function renderAdminCustomers() {
 
   const search = (adminCustomerSearch || "").trim().toLowerCase();
 
-  /* Sort: self dulu, lalu by role */
   const sorted = allCustomers.slice().sort((a, b) => {
     if (a.id === currentUser.uid) return -1;
     if (b.id === currentUser.uid) return 1;
@@ -2166,7 +2338,6 @@ function renderAdminCustomers() {
     return (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3);
   });
 
-  /* Filter by search */
   let list = sorted;
   if (search) {
     list = sorted.filter(u => {
@@ -2701,4 +2872,4 @@ document.addEventListener("keydown", e => {
 promoCards = DEFAULT_PROMO_CARDS.slice();
 </script>
 </body>
-</html>  
+</html>
